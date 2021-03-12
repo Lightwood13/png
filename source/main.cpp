@@ -1,5 +1,6 @@
 #include <iostream>
 #include <fstream>
+#include <sstream>
 #include <string>
 #include <cstdint>
 #include <array>
@@ -11,6 +12,14 @@
 #ifndef GET_BIT
 #define GET_BIT(VAL, IDX) (((VAL) >> (IDX)) & 1)
 #endif // !GET_BIT
+
+int16_t abs(int16_t a)
+{
+	if (a < 0)
+		return -a;
+	else
+		return a;
+}
 
 void readChunkHeader(std::istream& in, uint32_t& length, std::string& type);
 
@@ -127,7 +136,7 @@ void readNextCriticalChunkHeader(std::istream& in, uint32_t& length, std::string
 
 // reads IHDR chunk. If it's not present, throws an error.
 // Checks if all fields have valid values
-void readChunkIHDR(std::istream& in)
+void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height)
 {
 	uint32_t length;
 	std::string type;
@@ -135,8 +144,8 @@ void readChunkIHDR(std::istream& in)
 	if (length != 13 || type != "IHDR")
 		throw "error reading IHDR";
 
-	uint32_t width = readU32(in);
-	uint32_t height = readU32(in);
+	width = readU32(in);
+	height = readU32(in);
 	if (width == 0 || height == 0)
 		throw "zero image dimension";
 	std::clog << "Dimensions: " << height << " x " << width << std::endl;
@@ -182,7 +191,8 @@ void readChunkIHDR(std::istream& in)
 void decodePng(std::istream& in)
 {
 	readSignature(in);
-	readChunkIHDR(in);
+	uint32_t width, height;
+	readChunkIHDR(in, width, height);
 
 	uint32_t length;
 	std::string type;
@@ -194,8 +204,60 @@ void decodePng(std::istream& in)
 	else if (type != "IDAT")
 		throw "unknown critical chunk";
 	IDATStream idat(in, length);
-	std::string res = FlateDecode(idat);
-	int a = 1;
+	std::string filteredImageData = FlateDecode(idat);
+
+	std::istringstream imageDataStream(filteredImageData);
+	std::vector<unsigned char> line((width+1)*3, 0);
+	std::vector<unsigned char> prevLine((width+1)*3, 0);
+	std::vector<std::vector<unsigned char>> res;
+	for (uint32_t i = 0; i < height; i++)
+	{
+		char filterMethod = imageDataStream.get();
+		if (filterMethod < 0 || filterMethod > 4)
+			throw "invalid filter method";
+		imageDataStream.read(reinterpret_cast<char*>(line.data()) + 3, width * 3);
+		if (filterMethod == 1)
+			for (uint32_t j = 3; j < 3 * (width + 1); j++)
+				line[j] += line[j - 3];
+		else if (filterMethod == 2)
+			for (uint32_t j = 3; j < 3 * (width + 1); j++)
+				line[j] += prevLine[j];
+		else if (filterMethod == 3)
+			for (uint32_t j = 3; j < 3 * (width + 1); j++)
+				line[j] += (line[j - 3] + prevLine[j]) / 2;
+		else if (filterMethod == 4)
+			for (uint32_t j = 3; j < 3 * (width + 1); j++)
+			{
+				unsigned char a = line[j - 3];
+				unsigned char b = prevLine[j];
+				unsigned char c = prevLine[j - 3];
+				int16_t p = a + b - c;
+				int16_t pa = abs(p - a);
+				int16_t pb = abs(p - b);
+				int16_t pc = abs(p - c);
+
+				unsigned char res;
+				if (pa <= pb && pa <= pc)
+					res = a;
+				else if (pb <= pc)
+					res = b;
+				else
+					res = c;
+				line[j] += res;
+			}
+		res.push_back(std::vector<unsigned char>(3*width));
+		std::copy(line.begin() + 3, line.end(), res.back().begin());
+		std::copy(line.begin(), line.end(), prevLine.begin());
+	}
+
+	std::ofstream out("out.txt");
+	out << width << " " << height << std::endl;
+	for (const auto& line : res)
+	{
+		for (unsigned char c : line)
+			out << (unsigned int)c << " ";
+		out << std::endl;
+	}
 }
 
 int main()

@@ -1,3 +1,4 @@
+#include <SFML/Graphics.hpp>
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -8,10 +9,9 @@
 #include <map>
 #include <algorithm>
 
+#include "deflate.h"
 
-#ifndef GET_BIT
-#define GET_BIT(VAL, IDX) (((VAL) >> (IDX)) & 1)
-#endif // !GET_BIT
+
 
 int16_t abs(int16_t a)
 {
@@ -19,70 +19,6 @@ int16_t abs(int16_t a)
 		return -a;
 	else
 		return a;
-}
-
-void readChunkHeader(std::istream& in, uint32_t& length, std::string& type);
-
-class IDATStream
-{
-public:
-	IDATStream(std::istream& pIn, uint32_t initialLength);
-	void get(char& c);
-	void read(char* dest, uint16_t len);
-private:
-	std::istream& in;
-	uint32_t length;
-	uint32_t bytesRead = 0;
-
-	void skipToNextChunk();
-};
-
-#include "deflate.h"
-
-
-IDATStream::IDATStream(std::istream& pIn, uint32_t initialLength)
-	: in(pIn), length(initialLength) {}
-
-void IDATStream::get(char& c)
-{
-	if (bytesRead == length)
-	{
-		skipToNextChunk();
-		bytesRead = 0;
-	}
-	bytesRead++;
-	in.get(c);
-}
-
-void IDATStream::read(char* dest, uint16_t len)
-{
-	if (bytesRead == length)
-	{
-		skipToNextChunk();
-		bytesRead = 0;
-	}
-	while (len > length - bytesRead)
-	{
-		in.read(dest, length - bytesRead);
-		dest += length - bytesRead;
-		len -= length - bytesRead;
-		skipToNextChunk();
-		bytesRead = 0;
-	}
-	if (len != 0)
-		in.read(dest, len);
-}
-
-void IDATStream::skipToNextChunk()
-{
-	std::string type;
-	do
-	{
-		in.seekg(4, std::ios_base::cur); // skip crc
-		readChunkHeader(in, length, type);
-		if (type != "IDAT")
-			throw "unexpected end of image data";
-	} while (length == 0);
 }
 
 
@@ -188,10 +124,9 @@ void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height)
 	in.seekg(4, std::ios_base::cur); // skip crc for now
 }
 
-void decodePng(std::istream& in)
+std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& height)
 {
 	readSignature(in);
-	uint32_t width, height;
 	readChunkIHDR(in, width, height);
 
 	uint32_t length;
@@ -206,10 +141,11 @@ void decodePng(std::istream& in)
 	IDATStream idat(in, length);
 	std::string filteredImageData = FlateDecode(idat);
 
-	std::istringstream imageDataStream(filteredImageData);
-	std::vector<unsigned char> line((width+1)*3, 0);
-	std::vector<unsigned char> prevLine((width+1)*3, 0);
-	std::vector<std::vector<unsigned char>> res;
+	std::istringstream imageDataStream(std::move(filteredImageData));
+	std::vector<uint8_t> line((width + 1) * 3, 0);
+	std::vector<uint8_t> prevLine((width + 1) * 3, 0);
+	std::vector<uint8_t> res(height * width * 4);
+	size_t resPos = 0;
 	for (uint32_t i = 0; i < height; i++)
 	{
 		char filterMethod = imageDataStream.get();
@@ -245,24 +181,58 @@ void decodePng(std::istream& in)
 					res = c;
 				line[j] += res;
 			}
-		res.push_back(std::vector<unsigned char>(3*width));
-		std::copy(line.begin() + 3, line.end(), res.back().begin());
+		for (uint32_t i = 0; i < width; i++, resPos += 4)
+		{
+			res[resPos] = line[(i + 1) * 3];
+			res[resPos + 1] = line[(i + 1) * 3 + 1];
+			res[resPos + 2] = line[(i + 1) * 3 + 2];
+			res[resPos + 3] = 255;
+		}
 		std::copy(line.begin(), line.end(), prevLine.begin());
 	}
 
-	std::ofstream out("out.txt");
+	return res;
+
+	/*std::ofstream out("out.txt");
 	out << width << " " << height << std::endl;
 	for (const auto& line : res)
 	{
 		for (unsigned char c : line)
 			out << (unsigned int)c << " ";
 		out << std::endl;
-	}
+	}*/
 }
 
-int main()
+int main(int argc, char** argv)
 {
+	std::string filename = "test.png";
+	if (argc > 1)
+		filename = std::string(argv[1]);
+
 	std::ifstream in("test.png", std::ios_base::binary);
-	decodePng(in);
+	uint32_t width, height;
+	std::vector<uint8_t> buffer = decodePng(in, width, height);
+
+	sf::RenderWindow window(sf::VideoMode(width, height), filename);
+
+	sf::Texture t;
+	t.create(width, height);
+	sf::Sprite sprite(t);
+	t.update(buffer.data());
+
+	while (window.isOpen())
+	{
+		sf::Event event;
+		while (window.pollEvent(event))
+		{
+			if (event.type == sf::Event::Closed)
+				window.close();
+		}
+
+		window.clear();
+		window.draw(sprite);
+		window.display();
+	}
+
 	return 0;
 }

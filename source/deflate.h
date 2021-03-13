@@ -4,64 +4,11 @@
 #include <vector>
 #include <istream>
 
-class InverseReader
-{
-private:
-	IDATStream& in;
-	char tempByte = 0;
-	size_t remainingBits = 0;
-public:
-	InverseReader(IDATStream& pIn) : in(pIn) {};
-	int16_t read(size_t numOfBits)
-	{
-		if (remainingBits == 0)
-		{
-			in.get(tempByte);
-			remainingBits = 8;
-		}
-		int16_t res;
-		if (numOfBits <= remainingBits)
-		{
-			res = ((unsigned char)(tempByte << (remainingBits - numOfBits))) >> (8 - numOfBits);
-			remainingBits -= numOfBits;
-		}
-		else
-		{
-			res = ((unsigned char)tempByte) >> (8 - remainingBits);
-			in.get(tempByte);
-			if (numOfBits - remainingBits <= 8)
-			{
-				res += ((int16_t)(unsigned char)(tempByte << (8 - (numOfBits - remainingBits))))
-					>> (8 - (numOfBits - remainingBits)) << remainingBits;
-				remainingBits = 8 - (numOfBits - remainingBits);
-			}
-			else
-			{
-				res += ((int16_t)(unsigned char)tempByte) << remainingBits;
-				in.get(tempByte);
-				res += ((int16_t)(unsigned char)(tempByte << (8 - (numOfBits - remainingBits - 8))))
-					>> (8 - (numOfBits - remainingBits - 8)) << (remainingBits + 8);
-				remainingBits = 8 - (numOfBits - remainingBits - 8);
-			}
-		}
-		return res;
-	}
+#include "streams.h"
 
-	void finishByte()
-	{
-		remainingBits = 0;
-	}
-
-	bool readBit()
-	{
-		if (remainingBits == 0)
-		{
-			in.get(tempByte);
-			remainingBits = 8;
-		}
-		return (tempByte >> (8 - remainingBits--)) & 1;
-	}
-};
+#ifndef GET_BIT
+#define GET_BIT(VAL, IDX) (((VAL) >> (IDX)) & 1)
+#endif // !GET_BIT
 
 namespace Huffman
 {
@@ -151,7 +98,7 @@ namespace Huffman
 
 namespace
 {
-	int16_t readCode(InverseReader& r, Huffman::Node* tree)
+	int16_t readCode(BitStream& r, Huffman::Node* tree)
 	{
 		Huffman::Node* current = tree;
 		while (current->value == -1)
@@ -164,7 +111,7 @@ namespace
 		return current->value;
 	}
 
-	int16_t decodeLength(InverseReader& r, int16_t code)
+	int16_t decodeLength(BitStream& r, int16_t code)
 	{
 		if (code >= 257 && code <= 264)
 			return code - 254;
@@ -182,7 +129,7 @@ namespace
 			return 258;
 	}
 
-	int16_t decodeDistance(InverseReader& r, int16_t code)
+	int16_t decodeDistance(BitStream& r, int16_t code)
 	{
 		if (code >= 0 && code <= 3)
 			return 1 + code;
@@ -195,7 +142,7 @@ namespace
 	}
 
 	// returns number of codes read
-	size_t decodeCodeLength(InverseReader& r, int16_t code, std::vector<size_t>& codeLengths)
+	size_t decodeCodeLength(BitStream& r, int16_t code, std::vector<size_t>& codeLengths)
 	{
 		if (code >= 0 && code <= 15)
 		{
@@ -223,7 +170,7 @@ namespace
 		}
 	}
 
-	void readDynamicTrees(InverseReader& r, Huffman::Node*& literalTree, Huffman::Node*& distanceTree)
+	void readDynamicTrees(BitStream& r, Huffman::Node*& literalTree, Huffman::Node*& distanceTree)
 	{
 		size_t HLIT = 257 + r.read(5);
 		size_t HDIST = 1 + r.read(5);
@@ -264,7 +211,7 @@ namespace
 
 std::string FlateDecode(IDATStream& in)
 {
-	InverseReader r(in);
+	BitStream r(in);
 	std::string res;
 
 	//zlib
@@ -318,12 +265,26 @@ std::string FlateDecode(IDATStream& in)
 					else
 						distance = decodeDistance(r, readCode(r, distanceTree));
 
-					std::string copy = res.substr(res.size() - distance, length);
+					res.resize(res.size() + length);
+					size_t copyLength = (length < distance) ? length : distance;
+					size_t num = length / copyLength;
+					const std::string::iterator copyStart = res.end() - length - distance;
+					std::string::iterator it = res.end() - length;
+					for (size_t i = 0; i < num; i++)
+					{
+						if (i != 0)
+							it += copyLength;
+						std::copy(copyStart, copyStart + copyLength, it);
+					}
+					if (length % copyLength != 0)
+						std::copy(copyStart, copyStart + length % copyLength, it + copyLength);
+
+					/*std::string copy = res.substr(res.size() - distance, length);
 					size_t num = length / copy.length();
 					for (size_t i = 0; i < num; i++)
 						res.append(copy);
 					if (length % copy.length() != 0)
-						res.append(copy.substr(0, length - num * copy.length()));
+						res.append(copy.substr(0, length % copy.length()));*/
 				}
 			}
 			if (literalTree != staticTree)

@@ -72,7 +72,7 @@ namespace Huffman
 			next_code.push_back(code);
 		}
 
-		for (int16_t n = 0; n < codeLengths.size(); n++)
+		for (uint16_t n = 0; n < codeLengths.size(); n++)
 		{
 			size_t len = codeLengths[n];
 			if (len != 0)
@@ -98,7 +98,7 @@ namespace Huffman
 
 namespace
 {
-	int16_t readCode(BitStream& r, Huffman::Node* tree)
+	int16_t readCode(DeflateBitStream& r, Huffman::Node* tree)
 	{
 		Huffman::Node* current = tree;
 		while (current->value == -1)
@@ -111,7 +111,7 @@ namespace
 		return current->value;
 	}
 
-	int16_t decodeLength(BitStream& r, int16_t code)
+	int16_t decodeLength(DeflateBitStream& r, int16_t code)
 	{
 		if (code >= 257 && code <= 264)
 			return code - 254;
@@ -129,7 +129,7 @@ namespace
 			return 258;
 	}
 
-	int16_t decodeDistance(BitStream& r, int16_t code)
+	int16_t decodeDistance(DeflateBitStream& r, int16_t code)
 	{
 		if (code >= 0 && code <= 3)
 			return 1 + code;
@@ -142,7 +142,7 @@ namespace
 	}
 
 	// returns number of codes read
-	size_t decodeCodeLength(BitStream& r, int16_t code, std::vector<size_t>& codeLengths)
+	size_t decodeCodeLength(DeflateBitStream& r, int16_t code, std::vector<size_t>& codeLengths)
 	{
 		if (code >= 0 && code <= 15)
 		{
@@ -170,7 +170,7 @@ namespace
 		}
 	}
 
-	void readDynamicTrees(BitStream& r, Huffman::Node*& literalTree, Huffman::Node*& distanceTree)
+	void readDynamicTrees(DeflateBitStream& r, Huffman::Node*& literalTree, Huffman::Node*& distanceTree)
 	{
 		size_t HLIT = 257 + r.read(5);
 		size_t HDIST = 1 + r.read(5);
@@ -209,13 +209,13 @@ namespace
 	}
 }
 
-std::string FlateDecode(IDATStream& in)
+std::vector<uint8_t> FlateDecode(IDATStream& in)
 {
-	BitStream r(in);
-	std::string res;
+	DeflateBitStream r(in);
+	std::vector<uint8_t> res;
 
 	//zlib
-	char c;
+	uint8_t c;
 	in.get(c); // CMF
 	in.get(c); // FLG
 	if (GET_BIT(c, 5) == 1)
@@ -253,7 +253,7 @@ std::string FlateDecode(IDATStream& in)
 			{
 				int16_t code = readCode(r, literalTree);
 				if (code < 256) // literal byte
-					res += (char)code;
+					res.push_back((uint8_t)code);
 				else if (code == 256) // end of block
 					break;
 				else // length value
@@ -268,8 +268,8 @@ std::string FlateDecode(IDATStream& in)
 					res.resize(res.size() + length);
 					size_t copyLength = (length < distance) ? length : distance;
 					size_t num = length / copyLength;
-					const std::string::iterator copyStart = res.end() - length - distance;
-					std::string::iterator it = res.end() - length;
+					const std::vector<uint8_t>::iterator copyStart = res.end() - length - distance;
+					std::vector<uint8_t>::iterator it = res.end() - length;
 					for (size_t i = 0; i < num; i++)
 					{
 						if (i != 0)
@@ -278,13 +278,6 @@ std::string FlateDecode(IDATStream& in)
 					}
 					if (length % copyLength != 0)
 						std::copy(copyStart, copyStart + length % copyLength, it + copyLength);
-
-					/*std::string copy = res.substr(res.size() - distance, length);
-					size_t num = length / copy.length();
-					for (size_t i = 0; i < num; i++)
-						res.append(copy);
-					if (length % copy.length() != 0)
-						res.append(copy.substr(0, length % copy.length()));*/
 				}
 			}
 			if (literalTree != staticTree)
@@ -296,7 +289,7 @@ std::string FlateDecode(IDATStream& in)
 	}
 
 	// zlib ADLER-32
-	char temp[4];
+	uint8_t temp[4];
 	in.read(temp, 4);
 
 	return res;

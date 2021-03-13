@@ -72,7 +72,8 @@ void readNextCriticalChunkHeader(std::istream& in, uint32_t& length, std::string
 
 // reads IHDR chunk. If it's not present, throws an error.
 // Checks if all fields have valid values
-void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height)
+void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height,
+	uint8_t bitDepth, uint8_t colourType)
 {
 	uint32_t length;
 	std::string type;
@@ -86,8 +87,8 @@ void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height)
 		throw "zero image dimension";
 	std::clog << "Dimensions: " << height << " x " << width << std::endl;
 	
-	uint8_t bitDepth = readU8(in);
-	uint8_t colourType = readU8(in);
+	bitDepth = readU8(in);
+	colourType = readU8(in);
 	uint8_t compressionMethod = readU8(in);
 	uint8_t filterMethod = readU8(in);
 	uint8_t interlaceMethod = readU8(in);
@@ -124,10 +125,145 @@ void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height)
 	in.seekg(4, std::ios_base::cur); // skip crc for now
 }
 
+// removes filter from a single byte
+inline uint8_t reconstructByte(uint8_t x, uint8_t a, uint8_t b, uint8_t c, const uint8_t filterMethod)
+{
+	if (filterMethod == 0)
+		return x;
+	else if (filterMethod == 1)
+		return x + a;
+	else if (filterMethod == 2)
+		return x + b;
+	else if (filterMethod == 3)
+		return x + (a + b) / 2;
+	else
+	{
+		int16_t p = a + b - c;
+		int16_t pa = abs(p - a);
+		int16_t pb = abs(p - b);
+		int16_t pc = abs(p - c);
+
+		if (pa <= pb && pa <= pc)
+			return x + a;
+		else if (pb <= pc)
+			return x + b;
+		else
+			return x + c;
+	}
+}
+
+// removes filter from a single scanline
+void reconstructScanline(std::vector<uint8_t>::iterator& filteredData, uint32_t distBetweenCorrBytes,
+	std::vector<uint8_t>& byteLine, const std::vector<uint8_t>& prevByteLine)
+{
+	const uint8_t filterMethod = (*filteredData++);
+	if (filterMethod < 0 || filterMethod > 4)
+		throw "invalid filter method";
+	
+	for (uint32_t i = 0; i < prevByteLine.size(); i++)
+	{
+		uint8_t a = 0;
+		uint8_t b = prevByteLine[i];
+		uint8_t c = 0;
+		if (i >= distBetweenCorrBytes)
+		{
+			a = byteLine[i - distBetweenCorrBytes];
+			c = prevByteLine[i - distBetweenCorrBytes];
+		}
+		byteLine[i] = reconstructByte((*filteredData++), a, b, c, filterMethod);
+	}
+}
+
+// convert byte line to line of RGBA pixels
+void byteLineToPixelLine(const std::vector<uint8_t>& byteLine, std::vector<uint8_t>::iterator& dest,
+	uint32_t width, uint8_t bitDepth, uint8_t colourType)
+{
+	std::vector<uint8_t>::const_iterator it = byteLine.begin();
+	PngBitStream bytes(it, bitDepth);
+	for (uint32_t i = 0; i < width; i++)
+	{
+		uint8_t r, g, b, a;
+		if (colourType == 2) // truecolour
+		{
+			r = bytes.get(); g = bytes.get(); b = bytes.get();
+			a = 255;
+		}
+		else if (colourType == 6) // truecolour with alpha
+		{
+			r = bytes.get(); g = bytes.get(); b = bytes.get();
+			a = bytes.get();
+		}
+		else if (colourType == 0) // greyscale
+		{
+			uint8_t sample = bytes.get();
+			r = sample; g = sample; b = sample;
+			a = 255;
+		}
+		else if (colourType == 3) // palette
+			throw "indexed-coloured images are not supported for now";
+		else // greyscale with alpha
+		{
+			uint8_t sample = bytes.get();
+			r = sample; g = sample; b = sample;
+			a = bytes.get();
+		}
+		*(dest++) = r;
+		*(dest++) = g;
+		*(dest++) = b;
+		*(dest++) = a;
+	}
+}
+
+std::vector<uint8_t> removeFilter(std::vector<uint8_t>::iterator& filteredData,
+	uint32_t width, uint32_t height, uint8_t bitDepth, uint8_t colourType)
+{
+	uint32_t samplesPerPixel;
+	if (colourType == 0 || colourType == 3) // greyscale or palette
+		samplesPerPixel = 1;
+	else if (colourType == 4) // greyscale with alpha
+		samplesPerPixel = 2;
+	else if (colourType == 2) // truecolour
+		samplesPerPixel = 3;
+	else // truecolour with alpha
+		samplesPerPixel = 4;
+	uint32_t byteLineLength = width * samplesPerPixel * bitDepth / 8;
+	if (byteLineLength * 8 != width * bitDepth * samplesPerPixel)
+		byteLineLength++;
+	// distance between current byte and corresponding byte in previous pixel
+	// (1 if bitDepth is less than 8)
+	uint32_t distBetweenCorrBytes = 1;
+	if (bitDepth >= 8)
+		distBetweenCorrBytes = samplesPerPixel * bitDepth / 8;
+
+	// reconstructed byte lines
+	std::vector<uint8_t> byteLine1(byteLineLength, 0);
+	std::vector<uint8_t> byteLine2(byteLineLength, 0);
+	std::vector<uint8_t> res(height * width * 4);
+	std::vector<uint8_t>::iterator dest = res.begin();
+
+	for (uint32_t i = 0; i < height; i++)
+	{
+		if (i % 2 == 0)
+		{
+			reconstructScanline(filteredData, distBetweenCorrBytes, byteLine1, byteLine2);
+			byteLineToPixelLine(byteLine1, dest, width, bitDepth, colourType);
+		}
+		else
+		{
+			reconstructScanline(filteredData, distBetweenCorrBytes, byteLine2, byteLine1);
+			byteLineToPixelLine(byteLine2, dest, width, bitDepth, colourType);
+		}
+	}
+
+	return res;
+}
+
 std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& height)
 {
 	readSignature(in);
-	readChunkIHDR(in, width, height);
+	uint8_t bitDepth = 8;
+	uint8_t colourType = 2;
+	readChunkIHDR(in, width, height, bitDepth, colourType);
 
 	uint32_t length;
 	std::string type;
@@ -139,68 +275,18 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 	else if (type != "IDAT")
 		throw "unknown critical chunk";
 	IDATStream idat(in, length);
-	std::string filteredImageData = FlateDecode(idat);
+	std::vector<uint8_t> filteredImageData = FlateDecode(idat);
+	std::vector<uint8_t>::iterator it = filteredImageData.begin();
+	idat.close();
 
-	std::istringstream imageDataStream(std::move(filteredImageData));
-	std::vector<uint8_t> line((width + 1) * 3, 0);
-	std::vector<uint8_t> prevLine((width + 1) * 3, 0);
-	std::vector<uint8_t> res(height * width * 4);
-	size_t resPos = 0;
-	for (uint32_t i = 0; i < height; i++)
-	{
-		char filterMethod = imageDataStream.get();
-		if (filterMethod < 0 || filterMethod > 4)
-			throw "invalid filter method";
-		imageDataStream.read(reinterpret_cast<char*>(line.data()) + 3, width * 3);
-		if (filterMethod == 1)
-			for (uint32_t j = 3; j < 3 * (width + 1); j++)
-				line[j] += line[j - 3];
-		else if (filterMethod == 2)
-			for (uint32_t j = 3; j < 3 * (width + 1); j++)
-				line[j] += prevLine[j];
-		else if (filterMethod == 3)
-			for (uint32_t j = 3; j < 3 * (width + 1); j++)
-				line[j] += (line[j - 3] + prevLine[j]) / 2;
-		else if (filterMethod == 4)
-			for (uint32_t j = 3; j < 3 * (width + 1); j++)
-			{
-				unsigned char a = line[j - 3];
-				unsigned char b = prevLine[j];
-				unsigned char c = prevLine[j - 3];
-				int16_t p = a + b - c;
-				int16_t pa = abs(p - a);
-				int16_t pb = abs(p - b);
-				int16_t pc = abs(p - c);
+	readNextCriticalChunkHeader(in, length, type);
+	if (type != "IEND")
+		throw "end chunk not found";
 
-				unsigned char res;
-				if (pa <= pb && pa <= pc)
-					res = a;
-				else if (pb <= pc)
-					res = b;
-				else
-					res = c;
-				line[j] += res;
-			}
-		for (uint32_t i = 0; i < width; i++, resPos += 4)
-		{
-			res[resPos] = line[(i + 1) * 3];
-			res[resPos + 1] = line[(i + 1) * 3 + 1];
-			res[resPos + 2] = line[(i + 1) * 3 + 2];
-			res[resPos + 3] = 255;
-		}
-		std::copy(line.begin(), line.end(), prevLine.begin());
-	}
+	std::vector<uint8_t> res = removeFilter(it, width, height, bitDepth, colourType);
+	std::clog << "Image decoding finished successfully" << std::endl;
 
 	return res;
-
-	/*std::ofstream out("out.txt");
-	out << width << " " << height << std::endl;
-	for (const auto& line : res)
-	{
-		for (unsigned char c : line)
-			out << (unsigned int)c << " ";
-		out << std::endl;
-	}*/
 }
 
 int main(int argc, char** argv)

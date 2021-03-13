@@ -3,7 +3,7 @@
 IDATStream::IDATStream(std::istream& pIn, uint32_t initialLength)
 	: in(pIn), length(initialLength) {}
 
-void IDATStream::get(char& c)
+void IDATStream::get(uint8_t& c)
 {
 	if (bytesRead == length)
 	{
@@ -11,10 +11,10 @@ void IDATStream::get(char& c)
 		bytesRead = 0;
 	}
 	bytesRead++;
-	in.get(c);
+	c = in.get();
 }
 
-void IDATStream::read(char* dest, uint16_t len)
+void IDATStream::read(uint8_t* dest, uint16_t len)
 {
 	if (bytesRead == length)
 	{
@@ -23,14 +23,20 @@ void IDATStream::read(char* dest, uint16_t len)
 	}
 	while (len > length - bytesRead)
 	{
-		in.read(dest, length - bytesRead);
+		in.read(reinterpret_cast<char*>(dest), length - bytesRead);
 		dest += length - bytesRead;
 		len -= length - bytesRead;
 		skipToNextChunk();
 		bytesRead = 0;
 	}
 	if (len != 0)
-		in.read(dest, len);
+		in.read(reinterpret_cast<char*>(dest), len);
+}
+
+void IDATStream::close()
+{
+	char temp[4];
+	in.read(temp, 4); // skip crc
 }
 
 void IDATStream::skipToNextChunk()
@@ -46,9 +52,9 @@ void IDATStream::skipToNextChunk()
 }
 
 
-BitStream::BitStream(IDATStream& pIn) : in(pIn) {};
+DeflateBitStream::DeflateBitStream(IDATStream& pIn) : in(pIn) {};
 
-int16_t BitStream::read(size_t numOfBits)
+int16_t DeflateBitStream::read(size_t numOfBits)
 {
 	if (remainingBits == 0)
 	{
@@ -58,24 +64,24 @@ int16_t BitStream::read(size_t numOfBits)
 	int16_t res;
 	if (numOfBits <= remainingBits)
 	{
-		res = ((unsigned char)(tempByte << (remainingBits - numOfBits))) >> (8 - numOfBits);
+		res = ((uint8_t)(tempByte << (remainingBits - numOfBits))) >> (8 - numOfBits);
 		remainingBits -= numOfBits;
 	}
 	else
 	{
-		res = ((unsigned char)tempByte) >> (8 - remainingBits);
+		res = ((uint8_t)tempByte) >> (8 - remainingBits);
 		in.get(tempByte);
 		if (numOfBits - remainingBits <= 8)
 		{
-			res += ((int16_t)(unsigned char)(tempByte << (8 - (numOfBits - remainingBits))))
+			res += ((int16_t)(uint8_t)(tempByte << (8 - (numOfBits - remainingBits))))
 				>> (8 - (numOfBits - remainingBits)) << remainingBits;
 			remainingBits = 8 - (numOfBits - remainingBits);
 		}
 		else
 		{
-			res += ((int16_t)(unsigned char)tempByte) << remainingBits;
+			res += ((int16_t)(uint8_t)tempByte) << remainingBits;
 			in.get(tempByte);
-			res += ((int16_t)(unsigned char)(tempByte << (8 - (numOfBits - remainingBits - 8))))
+			res += ((int16_t)(uint8_t)(tempByte << (8 - (numOfBits - remainingBits - 8))))
 				>> (8 - (numOfBits - remainingBits - 8)) << (remainingBits + 8);
 			remainingBits = 8 - (numOfBits - remainingBits - 8);
 		}
@@ -83,12 +89,12 @@ int16_t BitStream::read(size_t numOfBits)
 	return res;
 }
 
-void BitStream::finishByte()
+void DeflateBitStream::finishByte()
 {
 	remainingBits = 0;
 }
 
-bool BitStream::readBit()
+bool DeflateBitStream::readBit()
 {
 	if (remainingBits == 0)
 	{
@@ -96,4 +102,48 @@ bool BitStream::readBit()
 		remainingBits = 8;
 	}
 	return (tempByte >> (8 - remainingBits--)) & 1;
+}
+
+
+PngBitStream::PngBitStream(std::vector<uint8_t>::const_iterator& pIn, uint8_t pBitDepth)
+	: in(pIn), bitDepth(pBitDepth) {};
+
+uint8_t PngBitStream::get()
+{
+	if (bitDepth == 8)
+		return *(in++);
+	else if (bitDepth == 16)
+	{
+		uint8_t res = *(in++);
+		in++;
+		return res;
+	}
+	
+	if (remainingSamples == 0)
+	{
+		tempByte = *(in++);
+		remainingSamples = 8 / bitDepth;
+	}
+	remainingSamples--;
+	uint8_t res;
+	if (bitDepth == 4)
+	{
+		res = tempByte & 0b11110000;
+		if (res >= 128)
+			res |= 0b1111;
+	}
+	else if (bitDepth == 2)
+	{
+		res = tempByte & 0b11000000;
+		if (res >= 128)
+			res |= 0b111111;
+	}
+	else
+	{
+		res = tempByte & 0b10000000;
+		if (res >= 128)
+			res |= 0b1111111;
+	}
+	tempByte <<= bitDepth;
+	return res;
 }

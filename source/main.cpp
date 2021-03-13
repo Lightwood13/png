@@ -73,7 +73,7 @@ void readNextCriticalChunkHeader(std::istream& in, uint32_t& length, std::string
 // reads IHDR chunk. If it's not present, throws an error.
 // Checks if all fields have valid values
 void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height,
-	uint8_t bitDepth, uint8_t colourType)
+	uint8_t& bitDepth, uint8_t& colourType)
 {
 	uint32_t length;
 	std::string type;
@@ -97,16 +97,16 @@ void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height,
 	if (std::find(allowedColourTypes.begin(), allowedColourTypes.end(), colourType)
 		== allowedColourTypes.end())
 		throw "invalid colour type";
-	static const std::array<std::vector<uint8_t>, 5> allowedBitDepths =
+	static const std::map<uint8_t, std::vector<uint8_t>> allowedBitDepths =
 	{
-		std::vector<uint8_t>{1, 2, 4, 8, 16},
-		std::vector<uint8_t>{8, 16},
-		std::vector<uint8_t>{1, 2, 4, 8},
-		std::vector<uint8_t>{8, 16},
-		std::vector<uint8_t>{8, 16}
+		{0, std::vector<uint8_t>{1, 2, 4, 8, 16}},
+		{2, std::vector<uint8_t>{8, 16}},
+		{3, std::vector<uint8_t>{1, 2, 4, 8}},
+		{4, std::vector<uint8_t>{8, 16}},
+		{6, std::vector<uint8_t>{8, 16}}
 	};
-	if (std::find(allowedBitDepths[colourType].begin(), allowedBitDepths[colourType].end(), bitDepth)
-		== allowedBitDepths[colourType].end())
+	if (std::find(allowedBitDepths.at(colourType).begin(), allowedBitDepths.at(colourType).end(), bitDepth)
+		== allowedBitDepths.at(colourType).end())
 		throw "invalid bit depth";
 	if (compressionMethod != 0)
 		throw "invalid compression method";
@@ -261,8 +261,8 @@ std::vector<uint8_t> removeFilter(std::vector<uint8_t>::iterator& filteredData,
 std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& height)
 {
 	readSignature(in);
-	uint8_t bitDepth = 8;
-	uint8_t colourType = 2;
+	uint8_t bitDepth;
+	uint8_t colourType;
 	readChunkIHDR(in, width, height, bitDepth, colourType);
 
 	uint32_t length;
@@ -291,11 +291,16 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 
 int main(int argc, char** argv)
 {
-	std::string filename = "test.png";
+	std::string filename = "test3.png";
 	if (argc > 1)
 		filename = std::string(argv[1]);
 
-	std::ifstream in("test.png", std::ios_base::binary);
+	std::ifstream in(filename, std::ios_base::binary);
+	if (!in.is_open())
+	{
+		std::clog << "File not found" << std::endl;
+		return 0;
+	}
 	uint32_t width, height;
 	std::vector<uint8_t> buffer = decodePng(in, width, height);
 

@@ -39,11 +39,12 @@ private:
 class PngBitStream
 {
 public:
-	PngBitStream(std::vector<uint8_t>::const_iterator& pIn, uint8_t pBitDepth);
+	PngBitStream(std::vector<uint8_t>::const_iterator& pIn, uint8_t pBitDepth, bool pUseScaling);
 	uint8_t get();
 private:
 	std::vector<uint8_t>::const_iterator& in;
 	const uint8_t bitDepth;
+	const bool useScaling;
 	uint8_t tempByte = 0;
 	size_t remainingSamples = 0;
 };

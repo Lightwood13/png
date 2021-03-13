@@ -176,10 +176,10 @@ void reconstructScanline(std::vector<uint8_t>::iterator& filteredData, uint32_t 
 
 // convert byte line to line of RGBA pixels
 void byteLineToPixelLine(const std::vector<uint8_t>& byteLine, std::vector<uint8_t>::iterator& dest,
-	uint32_t width, uint8_t bitDepth, uint8_t colourType)
+	const std::vector<uint8_t>& palette, uint32_t width, uint8_t bitDepth, uint8_t colourType)
 {
 	std::vector<uint8_t>::const_iterator it = byteLine.begin();
-	PngBitStream bytes(it, bitDepth);
+	PngBitStream bytes(it, bitDepth, ((colourType == 3) ? false : true));
 	for (uint32_t i = 0; i < width; i++)
 	{
 		uint8_t r, g, b, a;
@@ -200,7 +200,13 @@ void byteLineToPixelLine(const std::vector<uint8_t>& byteLine, std::vector<uint8
 			a = 255;
 		}
 		else if (colourType == 3) // palette
-			throw "indexed-coloured images are not supported for now";
+		{
+			uint8_t index = bytes.get();
+			r = palette[index * 3];
+			g = palette[index * 3 + 1];
+			b = palette[index * 3 + 2];
+			a = 255;
+		}
 		else // greyscale with alpha
 		{
 			uint8_t sample = bytes.get();
@@ -214,7 +220,8 @@ void byteLineToPixelLine(const std::vector<uint8_t>& byteLine, std::vector<uint8
 	}
 }
 
-std::vector<uint8_t> removeFilter(std::vector<uint8_t>::iterator& filteredData,
+std::vector<uint8_t> removeFilter(
+	std::vector<uint8_t>::iterator& filteredData, const std::vector<uint8_t>& palette,
 	uint32_t width, uint32_t height, uint8_t bitDepth, uint8_t colourType)
 {
 	uint32_t samplesPerPixel;
@@ -246,12 +253,12 @@ std::vector<uint8_t> removeFilter(std::vector<uint8_t>::iterator& filteredData,
 		if (i % 2 == 0)
 		{
 			reconstructScanline(filteredData, distBetweenCorrBytes, byteLine1, byteLine2);
-			byteLineToPixelLine(byteLine1, dest, width, bitDepth, colourType);
+			byteLineToPixelLine(byteLine1, dest, palette, width, bitDepth, colourType);
 		}
 		else
 		{
 			reconstructScanline(filteredData, distBetweenCorrBytes, byteLine2, byteLine1);
-			byteLineToPixelLine(byteLine2, dest, width, bitDepth, colourType);
+			byteLineToPixelLine(byteLine2, dest, palette, width, bitDepth, colourType);
 		}
 	}
 
@@ -265,15 +272,33 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 	uint8_t colourType;
 	readChunkIHDR(in, width, height, bitDepth, colourType);
 
+	std::vector<uint8_t> palette;
 	uint32_t length;
 	std::string type;
 	readNextCriticalChunkHeader(in, length, type);
 	if (type == "IEND")
 		throw "image data not present";
 	else if (type == "PLTE")
-		throw "indexed-coloured images are not supported for now";
+	{
+		if (length % 3 != 0 || length > 3 * (1 << bitDepth))
+			throw "invalid palette size";
+		palette.resize(length);
+		in.read(reinterpret_cast<char*>(palette.data()), length);
+		char temp[4];
+		in.read(temp, 4); // skip crc
+
+		readNextCriticalChunkHeader(in, length, type);
+		if (type == "IEND")
+			throw "image data not present";
+		else if (type == "PLTE")
+			throw "two palettes encountered";
+		else if (type != "IDAT")
+			throw "unknown critical chunk";
+	}
 	else if (type != "IDAT")
 		throw "unknown critical chunk";
+
+	
 	IDATStream idat(in, length);
 	std::vector<uint8_t> filteredImageData = FlateDecode(idat);
 	std::vector<uint8_t>::iterator it = filteredImageData.begin();
@@ -283,7 +308,10 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 	if (type != "IEND")
 		throw "end chunk not found";
 
-	std::vector<uint8_t> res = removeFilter(it, width, height, bitDepth, colourType);
+	if (colourType == 3 && palette.empty())
+		throw "no palette found";
+
+	std::vector<uint8_t> res = removeFilter(it, palette, width, height, bitDepth, colourType);
 	std::clog << "Image decoding finished successfully" << std::endl;
 
 	return res;
@@ -291,7 +319,7 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 
 int main(int argc, char** argv)
 {
-	std::string filename = "test3.png";
+	std::string filename = "test4.png";
 	if (argc > 1)
 		filename = std::string(argv[1]);
 

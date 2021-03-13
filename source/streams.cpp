@@ -105,8 +105,8 @@ bool DeflateBitStream::readBit()
 }
 
 
-PngBitStream::PngBitStream(std::vector<uint8_t>::const_iterator& pIn, uint8_t pBitDepth)
-	: in(pIn), bitDepth(pBitDepth) {};
+PngBitStream::PngBitStream(std::vector<uint8_t>::const_iterator& pIn, uint8_t pBitDepth, bool pUseScaling)
+	: in(pIn), bitDepth(pBitDepth), useScaling(pUseScaling) {};
 
 uint8_t PngBitStream::get()
 {
@@ -125,24 +125,37 @@ uint8_t PngBitStream::get()
 		remainingSamples = 8 / bitDepth;
 	}
 	remainingSamples--;
+
 	uint8_t res;
-	if (bitDepth == 4)
+	if (useScaling)
 	{
-		res = tempByte & 0b11110000;
-		if (res >= 128)
-			res |= 0b1111;
-	}
-	else if (bitDepth == 2)
-	{
-		res = tempByte & 0b11000000;
-		if (res >= 128)
-			res |= 0b111111;
+		if (bitDepth == 4)
+		{
+			res = tempByte & 0b11110000;
+			if (res >= 128)
+				res |= 0b1111;
+		}
+		else if (bitDepth == 2)
+		{
+			res = tempByte & 0b11000000;
+			if (res >= 128)
+				res |= 0b111111;
+		}
+		else
+		{
+			res = tempByte & 0b10000000;
+			if (res >= 128)
+				res |= 0b1111111;
+		}
 	}
 	else
 	{
-		res = tempByte & 0b10000000;
-		if (res >= 128)
-			res |= 0b1111111;
+		if (bitDepth == 4)
+			res = (tempByte >> 4) & 0b1111;
+		else if (bitDepth == 2)
+			res = (tempByte >> 6) & 0b11;
+		else
+			res = (tempByte >> 7) & 1;
 	}
 	tempByte <<= bitDepth;
 	return res;

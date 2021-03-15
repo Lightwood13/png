@@ -22,22 +22,6 @@ int16_t abs(int16_t a)
 }
 
 
-// reads unsigned 32-bit integer, stored with MSB first
-uint32_t readU32(std::istream& in)
-{
-	uint32_t a = in.get() << 24;
-	a = a | ((in.get() & 0xFF) << 16);
-	a = a | ((in.get() & 0xFF) << 8);
-	a = a | (in.get() & 0xFF);
-	return a;
-}
-
-// reads unsigned 8-bit integer
-uint8_t readU8(std::istream& in)
-{
-	return static_cast<uint8_t>(in.get());
-}
-
 // reads file signature. If it's corrupted, throws an error
 void readSignature(std::istream& in)
 {
@@ -48,50 +32,28 @@ void readSignature(std::istream& in)
 		throw "file signature is incorrect";
 }
 
-// reads length and type of chunk
-void readChunkHeader(std::istream& in, uint32_t& length, std::string& type)
-{
-	length = readU32(in);
-	type.resize(4);
-	in.read(type.data(), 4);
-}
-
-// reads length and type of next critical chunk, skipping
-// ancillary chunks
-void readNextCriticalChunkHeader(std::istream& in, uint32_t& length, std::string& type)
-{
-	readChunkHeader(in, length, type);
-	// if chunk is ancillary
-	while (GET_BIT(type[0], 5) == 1)
-	{
-		std::clog << "Skipped ancillary chunk: " << type << std::endl;
-		in.seekg(length + 4, std::ios_base::cur); // skip chunk data and crc
-		readChunkHeader(in, length, type);
-	}
-}
-
 // reads IHDR chunk. If it's not present, throws an error.
 // Checks if all fields have valid values
-void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height,
+void readChunkIHDR(PngChunkStream& in, uint32_t& width, uint32_t& height,
 	uint8_t& bitDepth, uint8_t& colourType)
 {
 	uint32_t length;
 	std::string type;
-	readChunkHeader(in, length, type);
+	in.readChunkHeader(length, type);
 	if (length != 13 || type != "IHDR")
 		throw "error reading IHDR";
 
-	width = readU32(in);
-	height = readU32(in);
+	width = in.readU32();
+	height = in.readU32();
 	if (width == 0 || height == 0)
 		throw "zero image dimension";
 	std::clog << "Dimensions: " << height << " x " << width << std::endl;
-	
-	bitDepth = readU8(in);
-	colourType = readU8(in);
-	uint8_t compressionMethod = readU8(in);
-	uint8_t filterMethod = readU8(in);
-	uint8_t interlaceMethod = readU8(in);
+
+	bitDepth = in.readU8();
+	colourType = in.readU8();
+	uint8_t compressionMethod = in.readU8();
+	uint8_t filterMethod = in.readU8();
+	uint8_t interlaceMethod = in.readU8();
 
 	static constexpr std::array<uint8_t, 5> allowedColourTypes = { 0, 2, 3, 4, 6 };
 	if (std::find(allowedColourTypes.begin(), allowedColourTypes.end(), colourType)
@@ -121,8 +83,7 @@ void readChunkIHDR(std::istream& in, uint32_t& width, uint32_t& height,
 		<< ", bit depth: " << static_cast<int>(bitDepth)
 		<< ", interlace used: " << (interlaceMethod ? "yes" : "no")
 		<< std::endl << std::endl;
-
-	in.seekg(4, std::ios_base::cur); // skip crc for now
+	in.finishCrcAndChunk();
 }
 
 // removes filter from a single byte
@@ -268,14 +229,15 @@ std::vector<uint8_t> removeFilter(
 std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& height)
 {
 	readSignature(in);
+	PngChunkStream chunkIn(in);
 	uint8_t bitDepth;
 	uint8_t colourType;
-	readChunkIHDR(in, width, height, bitDepth, colourType);
+	readChunkIHDR(chunkIn, width, height, bitDepth, colourType);
 
 	std::vector<uint8_t> palette;
 	uint32_t length;
 	std::string type;
-	readNextCriticalChunkHeader(in, length, type);
+	chunkIn.readNextCriticalChunkHeader(length, type);
 	if (type == "IEND")
 		throw "image data not present";
 	else if (type == "PLTE")
@@ -283,30 +245,27 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 		if (length % 3 != 0 || length > 3 * (1 << bitDepth))
 			throw "invalid palette size";
 		palette.resize(length);
-		in.read(reinterpret_cast<char*>(palette.data()), length);
-		char temp[4];
-		in.read(temp, 4); // skip crc
+		chunkIn.read(palette.data(), length);
+		chunkIn.finishCrcAndChunk();
 
-		readNextCriticalChunkHeader(in, length, type);
+		chunkIn.readNextCriticalChunkHeader(length, type);
 		if (type == "IEND")
 			throw "image data not present";
 		else if (type == "PLTE")
 			throw "two palettes encountered";
-		else if (type != "IDAT")
-			throw "unknown critical chunk";
 	}
-	else if (type != "IDAT")
+	if (type != "IDAT")
 		throw "unknown critical chunk";
 
 	
-	IDATStream idat(in, length);
-	std::vector<uint8_t> filteredImageData = FlateDecode(idat);
+	std::vector<uint8_t> filteredImageData = FlateDecode(chunkIn);
 	std::vector<uint8_t>::iterator it = filteredImageData.begin();
-	idat.close();
+	chunkIn.finishCrcAndChunk();
 
-	readNextCriticalChunkHeader(in, length, type);
+	chunkIn.readNextCriticalChunkHeader(length, type);
 	if (type != "IEND")
 		throw "end chunk not found";
+	chunkIn.finishCrcAndChunk();
 
 	if (colourType == 3 && palette.empty())
 		throw "no palette found";
@@ -319,7 +278,7 @@ std::vector<uint8_t> decodePng(std::istream& in, uint32_t& width, uint32_t& heig
 
 int main(int argc, char** argv)
 {
-	std::string filename = "test4.png";
+	std::string filename = "test.png";
 	if (argc > 1)
 		filename = std::string(argv[1]);
 

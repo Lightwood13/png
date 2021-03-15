@@ -6,10 +6,6 @@
 
 #include "streams.h"
 
-#ifndef GET_BIT
-#define GET_BIT(VAL, IDX) (((VAL) >> (IDX)) & 1)
-#endif // !GET_BIT
-
 namespace Huffman
 {
 	struct Node
@@ -209,7 +205,7 @@ namespace
 	}
 }
 
-std::vector<uint8_t> FlateDecode(IDATStream& in)
+std::vector<uint8_t> FlateDecode(PngChunkStream& in)
 {
 	DeflateBitStream r(in);
 	std::vector<uint8_t> res;
